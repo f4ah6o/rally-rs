@@ -4,7 +4,7 @@ version = "2026.5.0"
 edition = "2024"
 license = "MIT"
 description = "Cross-agent messaging for CLI AI agents"
-repository = "https://github.com/fujibee/rally-rs"
+repository = "https://github.com/f4ah6o/rally-rs"
 
 [[bin]]
 name = "ral"
