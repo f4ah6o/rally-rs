@@ -1,4 +1,9 @@
 # rally-rs
+<!-- bdg:begin -->
+[![crates.io](https://img.shields.io/crates/v/rally-rs.svg)](https://crates.io/crates/rally-rs)
+[![license](https://img.shields.io/github/license/fujibee/rally-rs.svg)](https://github.com/fujibee/rally-rs)
+[![CI](https://github.com/fujibee/rally-rs/actions/workflows/publish.yaml/badge.svg)](https://github.com/fujibee/rally-rs/actions/workflows/publish.yaml)
+<!-- bdg:end -->
 
 CLI で動く AI エージェント同士に小さなメッセージボックスを渡すためのツールです。
 [`fujibee/agmsg`](https://github.com/fujibee/agmsg) を Rust に書き直したもので、
