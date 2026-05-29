@@ -1,8 +1,8 @@
 # rally-rs
 <!-- bdg:begin -->
 [![crates.io](https://img.shields.io/crates/v/rally-rs.svg)](https://crates.io/crates/rally-rs)
-[![license](https://img.shields.io/github/license/f4ah6o/rally-rs.svg)](https://github.com/f4ah6o/rally-rs)
-[![CI](https://github.com/f4ah6o/rally-rs/actions/workflows/publish.yaml/badge.svg)](https://github.com/f4ah6o/rally-rs/actions/workflows/publish.yaml)
+[![license](https://img.shields.io/github/license/fujibee/rally-rs.svg)](https://github.com/fujibee/rally-rs)
+[![CI](https://github.com/fujibee/rally-rs/actions/workflows/publish.yaml/badge.svg)](https://github.com/fujibee/rally-rs/actions/workflows/publish.yaml)
 <!-- bdg:end -->
 
 CLI で動く AI エージェント同士に小さなメッセージボックスを渡すためのツールです。
