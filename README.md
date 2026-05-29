@@ -102,6 +102,14 @@ $ral send alice レビューお願いします
 $ral mode turn
 ```
 
+OpenCode:
+
+```text
+/ral
+/ral send alice レビューお願いします
+/ral mode turn
+```
+
 ### 配送モード
 
 `ral delivery set <mode> <agent_type> <project>` で切り替えます。
@@ -112,7 +120,9 @@ $ral mode turn
 - `both` — monitor を主にしつつ turn でも保険を取る。
 - `off` — 自動チェックなし。
 
-Codex には Monitor 相当の口が無いので `turn` か `off` を使ってください。
+OpenCode は Claude Code の JSON hook ではなく `.opencode/plugins/ral.js` を生成して
+`session.idle` などのイベントで inbox を確認します。Codex には Monitor 相当の口が
+無いので `turn` か `off` を使ってください。
 `ral hook on/off` は旧名で、`delivery set turn/off` の別名として残してあります。
 
 ## メンテナンス
@@ -131,6 +141,7 @@ ral uninstall --yes              # 全部消す
 - Claude Code 向けの SessionStart / Stop フックと Monitor ストリーム
   (`ral watch` / `ral session-start` / `ral session-end` / `ral check-inbox`)
 - Codex 向けの turn モード
+- OpenCode 向けの plugin ベース配送(`opencode` agent type)
 - `ral install` でのスキル・ラッパー・コマンド配置と `--update` 更新
 
 まだ無い、あるいは限定的なもの:
@@ -138,7 +149,8 @@ ral uninstall --yes              # 全部消す
 - ネットワーク越しの同期(共有ディレクトリ前提)
 - 添付ファイルや構造化ペイロード(本文は単一の文字列のみ)
 - 認証やアクセス制御(同じ DB ファイルが見える全員が読み書き可能)
-- Claude Code と Codex 以外のエージェント種別への正式対応
+- Claude Code、Codex、OpenCode、Gemini CLI、Antigravity 以外の
+  エージェント種別への正式対応
 
 統合テストは `tests/cli.rs` にあります。`cargo test` で実行できます。
 

@@ -116,6 +116,8 @@ enum Commands {
     },
     /// Check inbox for hook-based turn delivery.
     CheckInbox {
+        #[arg(long)]
+        no_cooldown: bool,
         agent_type: String,
         project_path: PathBuf,
     },
@@ -328,9 +330,10 @@ fn main() -> Result<()> {
             }
         },
         Commands::CheckInbox {
+            no_cooldown,
             agent_type,
             project_path,
-        } => check_inbox(&store, &agent_type, &project_path)?,
+        } => check_inbox(&store, &agent_type, &project_path, no_cooldown)?,
         Commands::Watch {
             session_id,
             project_path,
@@ -912,6 +915,21 @@ fn delivery_set(store: &Store, mode: &str, agent_type: &str, project_path: &Path
         "Delivery mode set to '{mode}' for {} ({agent_type})",
         project_path.display()
     );
+    if agent_type == "opencode" {
+        match mode {
+            "monitor" | "both" => {
+                println!(
+                    "Future sessions: OpenCode plugin will poll for inbox messages and inject them into the session."
+                );
+            }
+            "turn" => {
+                println!("Future sessions: OpenCode plugin will check inbox on session idle.");
+            }
+            "off" => println!("Future sessions: no automatic delivery."),
+            _ => unreachable!(),
+        }
+        return Ok(());
+    }
     match mode {
         "monitor" | "both" => {
             println!("Future sessions: SessionStart hook will auto-launch the watcher.");
@@ -940,6 +958,13 @@ fn delivery_status(
     if let (Some(agent_type), Some(project_path)) = (agent_type, project_path) {
         let mode = delivery_mode(store, agent_type, project_path)?;
         println!("mode: {mode}");
+        if agent_type == "opencode" {
+            let file = hooks_file(agent_type, project_path)?;
+            if file.exists() {
+                println!("plugin file: {}", file.display());
+            }
+            return Ok(());
+        }
         if !matches!(agent_type, "gemini" | "antigravity") {
             let file = hooks_file(agent_type, project_path)?;
             if file.exists() {
@@ -992,7 +1017,12 @@ fn delivery_restart(
     Ok(())
 }
 
-fn check_inbox(store: &Store, agent_type: &str, project_path: &Path) -> Result<()> {
+fn check_inbox(
+    store: &Store,
+    agent_type: &str,
+    project_path: &Path,
+    no_cooldown: bool,
+) -> Result<()> {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input)?;
     if input.contains("\"stop_hook_active\"") && input.contains("true") {
@@ -1018,7 +1048,7 @@ fn check_inbox(store: &Store, agent_type: &str, project_path: &Path) -> Result<(
         .unwrap_or("agent")
         .to_owned();
     let marker = store.db_dir().join(format!(".lastcheck-{marker_agent}"));
-    if marker.exists() {
+    if !no_cooldown && marker.exists() {
         let last = fs::metadata(&marker)?
             .modified()
             .unwrap_or(SystemTime::UNIX_EPOCH);
@@ -1217,6 +1247,10 @@ fn apply_delivery_settings(
     project_path: &Path,
     mode: &str,
 ) -> Result<()> {
+    if agent_type == "opencode" {
+        return apply_opencode_delivery_settings(store, project_path, mode);
+    }
+
     if matches!(agent_type, "gemini" | "antigravity") {
         let rule_file = hooks_file(agent_type, project_path)?;
         let _ = fs::remove_file(&rule_file);
@@ -1293,6 +1327,9 @@ fn apply_delivery_settings(
 }
 
 fn delivery_mode(store: &Store, agent_type: &str, project_path: &Path) -> Result<&'static str> {
+    if agent_type == "opencode" {
+        return opencode_delivery_mode(project_path);
+    }
     if matches!(agent_type, "gemini" | "antigravity") {
         return Ok(if hooks_file(agent_type, project_path)?.exists() {
             "turn"
@@ -1319,9 +1356,189 @@ fn hooks_file(agent_type: &str, project_path: &Path) -> Result<PathBuf> {
     match agent_type {
         "claude-code" => Ok(project_path.join(".claude").join("settings.local.json")),
         "codex" => Ok(project_path.join(".codex").join("hooks.json")),
+        "opencode" => Ok(project_path
+            .join(".opencode")
+            .join("plugins")
+            .join("ral.js")),
         "gemini" | "antigravity" => Ok(project_path.join(".agent").join("rules").join("ral.md")),
         _ => bail!("Unknown agent type: {agent_type}"),
     }
+}
+
+const OPENCODE_PLUGIN_SENTINEL: &str = "ral-owned-opencode-plugin";
+
+fn apply_opencode_delivery_settings(store: &Store, project_path: &Path, mode: &str) -> Result<()> {
+    let plugin = hooks_file("opencode", project_path)?;
+    if mode == "off" {
+        remove_owned_opencode_plugin(&plugin)?;
+        return Ok(());
+    }
+    if plugin.exists() && !opencode_plugin_owned(&plugin)? {
+        bail!(
+            "Refusing to overwrite non-ral OpenCode plugin: {}",
+            plugin.display()
+        );
+    }
+    if let Some(parent) = plugin.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    ensure_opencode_gitignore(project_path)?;
+    fs::write(&plugin, opencode_plugin(store, project_path, mode)?)?;
+    Ok(())
+}
+
+fn remove_owned_opencode_plugin(path: &Path) -> Result<()> {
+    if path.exists() && opencode_plugin_owned(path)? {
+        fs::remove_file(path)?;
+        remove_empty_parent(path.parent());
+        remove_empty_parent(path.parent().and_then(Path::parent));
+    }
+    Ok(())
+}
+
+fn remove_empty_parent(path: Option<&Path>) {
+    let Some(path) = path else {
+        return;
+    };
+    let _ = fs::remove_dir(path);
+}
+
+fn ensure_opencode_gitignore(project_path: &Path) -> Result<()> {
+    let path = project_path.join(".opencode").join(".gitignore");
+    let mut text = fs::read_to_string(&path).unwrap_or_default();
+    let mut changed = false;
+    for entry in [
+        "plugins/ral.js",
+        "node_modules/",
+        "package-lock.json",
+        "package.json",
+    ] {
+        if !text.lines().any(|line| line.trim() == entry) {
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(entry);
+            text.push('\n');
+            changed = true;
+        }
+    }
+    if changed {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, text)?;
+    }
+    Ok(())
+}
+
+fn opencode_delivery_mode(project_path: &Path) -> Result<&'static str> {
+    let plugin = hooks_file("opencode", project_path)?;
+    if !plugin.exists() || !opencode_plugin_owned(&plugin)? {
+        return Ok("off");
+    }
+    let text = fs::read_to_string(plugin)?;
+    if text.contains("const RAL_MODE = \"both\";") {
+        Ok("both")
+    } else if text.contains("const RAL_MODE = \"monitor\";") {
+        Ok("monitor")
+    } else {
+        Ok("turn")
+    }
+}
+
+fn opencode_plugin_owned(path: &Path) -> Result<bool> {
+    Ok(fs::read_to_string(path)?.contains(OPENCODE_PLUGIN_SENTINEL))
+}
+
+fn opencode_plugin(store: &Store, project_path: &Path, mode: &str) -> Result<String> {
+    let check = store.scripts_dir().join("check-inbox.sh");
+    let interval = config_get(store, "delivery.monitor.poll_interval", Some("5"))
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(5)
+        .max(1);
+    Ok(format!(
+        r#"// {sentinel}
+// Generated by ral. Re-run `ral delivery set` instead of editing this file.
+import {{ spawnSync }} from "node:child_process";
+
+const RAL_MODE = "{mode}";
+const RAL_CHECK = {check:?};
+const RAL_PROJECT = {project:?};
+const RAL_POLL_MS = {poll_ms};
+
+export const RalPlugin = async ({{ client }}) => {{
+  const active = new Set();
+  let timer;
+
+  function readInbox(sessionID, noCooldown) {{
+    const args = ["opencode", RAL_PROJECT];
+    if (noCooldown) args.unshift("--no-cooldown");
+    const result = spawnSync(RAL_CHECK, args, {{
+      encoding: "utf8",
+      input: JSON.stringify({{ session_id: sessionID }}),
+    }});
+    if (result.status !== 0 || !result.stdout.trim()) return undefined;
+    try {{
+      const message = JSON.parse(result.stdout);
+      return message.reason;
+    }} catch {{
+      return result.stdout.trim();
+    }}
+  }}
+
+  async function deliver(sessionID, noCooldown = false) {{
+    const text = readInbox(sessionID, noCooldown);
+    if (!text) return;
+    await client.session.promptAsync({{
+      path: {{ id: sessionID }},
+      body: {{
+        parts: [{{ type: "text", text: `ral inbox:\n${{text}}` }}],
+      }},
+    }});
+  }}
+
+  function ensurePolling() {{
+    if (timer || RAL_MODE === "turn") return;
+    timer = setInterval(() => {{
+      if (active.size === 0) {{
+        clearInterval(timer);
+        timer = undefined;
+        return;
+      }}
+      for (const sessionID of active) deliver(sessionID).catch(() => undefined);
+    }}, RAL_POLL_MS);
+    timer.unref?.();
+  }}
+
+  return {{
+    event: async (input) => {{
+      const event = input.event;
+      if (event.type === "session.created") {{
+        active.add(event.properties.info.id);
+        ensurePolling();
+      }}
+      if (event.type === "session.deleted") {{
+        active.delete(event.properties.info.id);
+        if (active.size === 0 && timer) {{
+          clearInterval(timer);
+          timer = undefined;
+        }}
+      }}
+      if (event.type === "session.idle") {{
+        active.add(event.properties.sessionID);
+        await deliver(event.properties.sessionID, true);
+      }}
+    }},
+  }};
+}};
+"#,
+        sentinel = OPENCODE_PLUGIN_SENTINEL,
+        mode = mode,
+        check = check.to_string_lossy(),
+        project = project_path.to_string_lossy(),
+        poll_ms = interval * 1000,
+    ))
 }
 
 fn hook_command(store: &Store, command: &str, agent_type: &str, project_path: &Path) -> String {
@@ -1647,6 +1864,10 @@ fn install(cmd_name: &str, update: bool) -> Result<()> {
         skill_dir.join("templates").join("cmd.claude-code.md"),
         claude_command_template(cmd_name),
     )?;
+    fs::write(
+        skill_dir.join("templates").join("cmd.opencode.md"),
+        opencode_command_template(cmd_name),
+    )?;
     fs::write(skill_dir.join("agents").join("openai.yaml"), OPENAI_YAML)?;
     for (script, command) in WRAPPER_COMMANDS {
         let path = skill_dir.join("scripts").join(script);
@@ -1662,11 +1883,21 @@ fn install(cmd_name: &str, update: bool) -> Result<()> {
             claude_command_template(cmd_name),
         )?;
     }
+    let opencode_commands = home_dir()?
+        .join(".config")
+        .join("opencode")
+        .join("commands");
+    fs::create_dir_all(&opencode_commands)?;
+    fs::write(
+        opencode_commands.join(format!("{cmd_name}.md")),
+        opencode_command_template(cmd_name),
+    )?;
     update_codex_writable_roots(&skill_dir, true)?;
 
     println!("Installed to {}", skill_dir.display());
     println!("Claude Code: /{cmd_name}");
     println!("Codex: ${cmd_name}");
+    println!("OpenCode: /{cmd_name}");
     Ok(())
 }
 
@@ -1706,6 +1937,12 @@ fn uninstall(yes: bool, keep_data: bool) -> Result<()> {
             .join("commands")
             .join(format!("{name}.md"));
         let _ = fs::remove_file(claude_cmd);
+        let opencode_cmd = home_dir()?
+            .join(".config")
+            .join("opencode")
+            .join("commands")
+            .join(format!("{name}.md"));
+        let _ = fs::remove_file(opencode_cmd);
         update_codex_writable_roots(&skill_dir, false)?;
         if keep_data {
             let _ = fs::remove_dir_all(skill_dir.join("scripts"));
@@ -1731,6 +1968,13 @@ fn remove_owned_hooks_from_registered_projects(store: &Store) -> Result<()> {
             for reg in agent.registrations {
                 if matches!(reg.agent_type.as_str(), "gemini" | "antigravity") {
                     let _ = fs::remove_file(hooks_file(&reg.agent_type, Path::new(&reg.project))?);
+                    continue;
+                }
+                if reg.agent_type == "opencode" {
+                    let _ = remove_owned_opencode_plugin(&hooks_file(
+                        &reg.agent_type,
+                        Path::new(&reg.project),
+                    )?);
                     continue;
                 }
                 let file = hooks_file(&reg.agent_type, Path::new(&reg.project))?;
@@ -1832,24 +2076,35 @@ fn codex_skill(cmd: &str) -> String {
     format!(
         r#"---
 name: {cmd}
-description: Cross-agent messaging via SQLite. Send messages between Claude Code, Codex, Gemini CLI, and other agents.
+description: Cross-agent messaging via SQLite. Send messages between Claude Code, Codex, OpenCode, Gemini CLI, and other agents.
 ---
 
 Agent messaging command. Always use the installed wrappers in `~/.agents/skills/{cmd}/scripts/`.
 
 ## Identity
 
-Run:
+For Codex, run:
 
 ```bash
 ~/.agents/skills/{cmd}/scripts/whoami.sh "$(pwd)" codex
 ```
 
-If not joined, ask for a team name and agent name, then run:
+For OpenCode, run:
+
+```bash
+~/.agents/skills/{cmd}/scripts/whoami.sh "$(pwd)" opencode
+```
+
+If not joined, ask for a team name and agent name, then run the matching agent type:
 
 ```bash
 ~/.agents/skills/{cmd}/scripts/join.sh <team> <agent_name> codex "$(pwd)"
 ~/.agents/skills/{cmd}/scripts/delivery.sh set turn codex "$(pwd)"
+```
+
+```bash
+~/.agents/skills/{cmd}/scripts/join.sh <team> <agent_name> opencode "$(pwd)"
+~/.agents/skills/{cmd}/scripts/delivery.sh set turn opencode "$(pwd)"
 ```
 
 ## Execute
@@ -1858,7 +2113,7 @@ If not joined, ask for a team name and agent name, then run:
 - `send <agent> <message>`: send with `send.sh <team> <from> <to> "<message>"`.
 - `team`: list members with `team.sh <team>`.
 - `history`: show message history with `history.sh <team> [agent]`.
-- `mode turn|off`: update delivery with `delivery.sh set <mode> codex "$(pwd)"`.
+- `mode turn|off`: update delivery with `delivery.sh set <mode> codex "$(pwd)"` or `delivery.sh set <mode> opencode "$(pwd)"`.
 - `actas <name>`: join/switch sending role for this session.
 - `drop <name>`: run `reset.sh "$(pwd)" codex <name>`.
 "#
@@ -1887,6 +2142,32 @@ If not joined, ask for team and agent name, then run:
 ```
 
 For monitor/both mode, follow any `AGMSG-DIRECTIVE` printed by `delivery.sh`.
+
+Default action: run inbox immediately. Reply with `send.sh` when appropriate.
+"#
+    )
+}
+
+fn opencode_command_template(cmd: &str) -> String {
+    format!(
+        r#"---
+description: Agent messaging - check inbox, send messages, view history
+---
+
+Use the installed ral wrappers in `~/.agents/skills/{cmd}/scripts/`.
+
+First resolve identity:
+
+```bash
+~/.agents/skills/{cmd}/scripts/whoami.sh "$(pwd)" opencode
+```
+
+If not joined, ask for team and agent name, then run:
+
+```bash
+~/.agents/skills/{cmd}/scripts/join.sh <team> <agent_name> opencode "$(pwd)"
+~/.agents/skills/{cmd}/scripts/delivery.sh set turn opencode "$(pwd)"
+```
 
 Default action: run inbox immediately. Reply with `send.sh` when appropriate.
 "#
@@ -1995,9 +2276,9 @@ fn write_team_config(path: &Path, config: &TeamConfig) -> Result<()> {
 
 fn validate_agent_type(agent_type: &str) -> Result<()> {
     match agent_type {
-        "claude-code" | "codex" | "gemini" | "antigravity" => Ok(()),
+        "claude-code" | "codex" | "opencode" | "gemini" | "antigravity" => Ok(()),
         _ => bail!(
-            "Unknown agent type: '{agent_type}' (supported: claude-code, codex, gemini, antigravity)"
+            "Unknown agent type: '{agent_type}' (supported: claude-code, codex, opencode, gemini, antigravity)"
         ),
     }
 }

@@ -103,6 +103,25 @@ fn team_identity_and_reset() {
 }
 
 #[test]
+fn opencode_identity_is_supported() {
+    let home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    let project_path = project.path().to_str().unwrap();
+
+    ral(&home)
+        .args(["join", "team", "opal", "opencode", project_path])
+        .assert()
+        .success();
+
+    ral(&home)
+        .args(["whoami", project_path, "opencode"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("agent=opal"))
+        .stdout(predicate::str::contains("type=opencode"));
+}
+
+#[test]
 fn rename_team_migrates_messages() {
     let home = TempDir::new().unwrap();
 
@@ -223,6 +242,88 @@ fn hook_aliases_delivery_turn_and_off() {
 }
 
 #[test]
+fn opencode_delivery_writes_owned_plugin_and_status() {
+    let home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    let project_path = project.path().to_str().unwrap();
+    let plugin = project.path().join(".opencode/plugins/ral.js");
+
+    ral(&home)
+        .args(["delivery", "set", "turn", "opencode", project_path])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("OpenCode plugin"));
+
+    let text = fs::read_to_string(&plugin).unwrap();
+    assert!(text.contains("ral-owned-opencode-plugin"));
+    assert!(text.contains("export const RalPlugin"));
+    assert!(text.contains("session.idle"));
+    assert!(text.contains("promptAsync"));
+    assert!(text.contains("check-inbox.sh"));
+    assert!(text.contains("if (noCooldown) args.unshift(\"--no-cooldown\")"));
+    assert!(text.contains("clearInterval(timer)"));
+    assert!(text.contains(project_path));
+    assert!(text.contains("const RAL_MODE = \"turn\";"));
+    let gitignore = fs::read_to_string(project.path().join(".opencode/.gitignore")).unwrap();
+    assert!(gitignore.contains("plugins/ral.js"));
+
+    ral(&home)
+        .args(["delivery", "status", "opencode", project_path])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("mode: turn"))
+        .stdout(predicate::str::contains(".opencode/plugins/ral.js"));
+
+    ral(&home)
+        .args(["delivery", "set", "monitor", "opencode", project_path])
+        .assert()
+        .success();
+    let text = fs::read_to_string(&plugin).unwrap();
+    assert!(text.contains("const RAL_MODE = \"monitor\";"));
+    assert!(text.contains("setInterval"));
+
+    ral(&home)
+        .args(["delivery", "set", "both", "opencode", project_path])
+        .assert()
+        .success();
+    ral(&home)
+        .args(["delivery", "status", "opencode", project_path])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("mode: both"));
+    let text = fs::read_to_string(&plugin).unwrap();
+    assert!(text.contains("const RAL_MODE = \"both\";"));
+
+    ral(&home)
+        .args(["delivery", "set", "off", "opencode", project_path])
+        .assert()
+        .success();
+    assert!(!plugin.exists());
+}
+
+#[test]
+fn opencode_delivery_refuses_to_overwrite_foreign_plugin() {
+    let home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    let project_path = project.path().to_str().unwrap();
+    let plugin = project.path().join(".opencode/plugins/ral.js");
+    fs::create_dir_all(plugin.parent().unwrap()).unwrap();
+    fs::write(&plugin, "export default async function Foreign() {}\n").unwrap();
+
+    ral(&home)
+        .args(["delivery", "set", "turn", "opencode", project_path])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Refusing to overwrite"));
+
+    ral(&home)
+        .args(["delivery", "set", "off", "opencode", project_path])
+        .assert()
+        .success();
+    assert!(plugin.exists());
+}
+
+#[test]
 fn check_inbox_handles_codex_json_cooldown_and_unread() {
     let home = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
@@ -261,6 +362,41 @@ fn check_inbox_handles_codex_json_cooldown_and_unread() {
 }
 
 #[test]
+fn check_inbox_no_cooldown_allows_immediate_opencode_delivery() {
+    let home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    let project_path = project.path().to_str().unwrap();
+
+    ral(&home)
+        .args(["join", "team", "opal", "opencode", project_path])
+        .assert()
+        .success();
+    ral(&home)
+        .args(["send", "team", "bob", "opal", "first"])
+        .assert()
+        .success();
+
+    let mut cmd = ral(&home);
+    cmd.args(["check-inbox", "opencode", project_path])
+        .write_stdin("{}")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("first"));
+
+    ral(&home)
+        .args(["send", "team", "bob", "opal", "second"])
+        .assert()
+        .success();
+
+    let mut cmd = ral(&home);
+    cmd.args(["check-inbox", "--no-cooldown", "opencode", project_path])
+        .write_stdin("{}")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("second"));
+}
+
+#[test]
 fn session_start_only_emits_directive_when_joined() {
     let home = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
@@ -293,13 +429,21 @@ fn install_and_uninstall_write_skill_assets() {
         .args(["install", "--cmd", "ral"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Installed"));
+        .stdout(predicate::str::contains("Installed"))
+        .stdout(predicate::str::contains("OpenCode: /ral"));
 
     let skill = fake_home.path().join(".agents/skills/ral");
     assert!(skill.join(".rally-rs").exists());
     assert!(skill.join("SKILL.md").exists());
+    assert!(skill.join("templates/cmd.opencode.md").exists());
     assert!(skill.join("scripts/send.sh").exists());
     assert!(skill.join("db/messages.db").exists());
+    assert!(
+        fake_home
+            .path()
+            .join(".config/opencode/commands/ral.md")
+            .exists()
+    );
 
     ral_with_home(&fake_home)
         .args(["uninstall", "--yes", "--keep-data"])
@@ -308,6 +452,12 @@ fn install_and_uninstall_write_skill_assets() {
         .stdout(predicate::str::contains("kept data"));
     assert!(skill.join("db/messages.db").exists());
     assert!(!skill.join("scripts/send.sh").exists());
+    assert!(
+        !fake_home
+            .path()
+            .join(".config/opencode/commands/ral.md")
+            .exists()
+    );
 
     ral_with_home(&fake_home)
         .args(["install", "--cmd", "ral", "--update"])
@@ -318,6 +468,37 @@ fn install_and_uninstall_write_skill_assets() {
         .assert()
         .success();
     assert!(!skill.exists());
+}
+
+#[test]
+fn uninstall_removes_owned_opencode_plugin_from_registered_project() {
+    let fake_home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    let project_path = project.path().to_str().unwrap();
+    let plugin = project.path().join(".opencode/plugins/ral.js");
+
+    ral_with_home(&fake_home)
+        .args(["install", "--cmd", "ral"])
+        .assert()
+        .success();
+    let skill_home = fake_home.path().join(".agents/skills/ral");
+    let mut cmd = Command::cargo_bin("ral").unwrap();
+    cmd.env("RALLY_HOME", &skill_home)
+        .args(["join", "team", "opal", "opencode", project_path])
+        .assert()
+        .success();
+    let mut cmd = Command::cargo_bin("ral").unwrap();
+    cmd.env("RALLY_HOME", &skill_home)
+        .args(["delivery", "set", "turn", "opencode", project_path])
+        .assert()
+        .success();
+    assert!(plugin.exists());
+
+    ral_with_home(&fake_home)
+        .args(["uninstall", "--yes"])
+        .assert()
+        .success();
+    assert!(!plugin.exists());
 }
 
 #[test]
