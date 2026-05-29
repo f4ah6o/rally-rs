@@ -471,6 +471,51 @@ fn install_and_uninstall_write_skill_assets() {
 }
 
 #[test]
+fn skill_command_prints_bundled_skill() {
+    let home = TempDir::new().unwrap();
+
+    ral(&home)
+        .arg("skill")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("name: ral"))
+        .stdout(predicate::str::contains("## Delivery Modes"))
+        .stdout(predicate::str::contains(
+            "~/.agents/skills/ral/scripts/whoami.sh",
+        ))
+        .stderr("");
+}
+
+#[test]
+fn skills_alias_matches_skill_output() {
+    let home = TempDir::new().unwrap();
+
+    let skill = ral(&home).arg("skill").output().unwrap();
+    let skills = ral(&home).arg("skills").output().unwrap();
+
+    assert!(skill.status.success());
+    assert!(skills.status.success());
+    assert_eq!(skill.stdout, skills.stdout);
+    assert!(skill.stderr.is_empty());
+    assert!(skills.stderr.is_empty());
+}
+
+#[test]
+fn skill_command_renders_custom_command_name() {
+    let home = TempDir::new().unwrap();
+
+    ral(&home)
+        .args(["skill", "--cmd", "teamchat"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("name: teamchat"))
+        .stdout(predicate::str::contains(
+            "~/.agents/skills/teamchat/scripts/whoami.sh",
+        ))
+        .stderr("");
+}
+
+#[test]
 fn uninstall_removes_owned_opencode_plugin_from_registered_project() {
     let fake_home = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();

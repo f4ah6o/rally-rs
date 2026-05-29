@@ -59,6 +59,14 @@ ral install
 ラッパーは `--home ~/.agents/skills/ral` を付けて Rust バイナリを呼びます。
 Claude Code と Codex から同じ DB が見える、という以上の仕掛けはありません。
 
+インストールせずに同梱の Agent Skill 文面だけ確認したい場合は、次で標準出力に
+出せます。`skills` は `skill` の別名です。
+
+```bash
+ral skill
+ral skills
+```
+
 ## 直接 CLI を使う場合
 
 ```bash
