@@ -136,6 +136,12 @@ enum Commands {
         agent_type: String,
         project_path: PathBuf,
     },
+    /// Print the bundled Agent Skill.
+    #[command(visible_alias = "skills")]
+    Skill {
+        #[arg(long = "cmd", default_value = "ral")]
+        cmd_name: String,
+    },
     /// Install the skill, wrappers, and agent command assets.
     Install {
         #[arg(long = "cmd", default_value = "ral")]
@@ -351,6 +357,7 @@ fn main() -> Result<()> {
             agent_type,
             project_path,
         } => session_end(&store, &agent_type, &project_path)?,
+        Commands::Skill { cmd_name } => print_skill(&cmd_name),
         Commands::Install { cmd_name, update } => install(&cmd_name, update)?,
         Commands::Uninstall { yes, keep_data } => uninstall(yes, keep_data)?,
     }
@@ -1828,6 +1835,10 @@ fn ral_command() -> String {
     env::var("RAL_BIN").unwrap_or_else(|_| "ral".to_owned())
 }
 
+fn print_skill(cmd: &str) {
+    print!("{}", codex_skill(cmd));
+}
+
 fn codex_skill(cmd: &str) -> String {
     format!(
         r#"---
@@ -1835,32 +1846,68 @@ name: {cmd}
 description: Cross-agent messaging via SQLite. Send messages between Claude Code, Codex, Gemini CLI, and other agents.
 ---
 
-Agent messaging command. Always use the installed wrappers in `~/.agents/skills/{cmd}/scripts/`.
+# {cmd}
+
+Use this skill to coordinate work between CLI agents through the `ral` message
+box. Always use the installed wrapper scripts in
+`~/.agents/skills/{cmd}/scripts/`; do not edit the SQLite database, team JSON,
+hook files, or Codex/Claude settings by hand.
 
 ## Identity
 
-Run:
+Before any action, resolve the active identity for the current project.
 
 ```bash
 ~/.agents/skills/{cmd}/scripts/whoami.sh "$(pwd)" codex
 ```
 
-If not joined, ask for a team name and agent name, then run:
+If no identity is registered, ask the user for a team name and agent name, then
+join and enable the normal Codex delivery mode:
 
 ```bash
 ~/.agents/skills/{cmd}/scripts/join.sh <team> <agent_name> codex "$(pwd)"
 ~/.agents/skills/{cmd}/scripts/delivery.sh set turn codex "$(pwd)"
 ```
 
-## Execute
+For Claude Code, use `claude-code` as the agent type and prefer monitor
+delivery:
 
-- No arguments: check inbox with `inbox.sh <team> <agent>`.
+```bash
+~/.agents/skills/{cmd}/scripts/join.sh <team> <agent_name> claude-code "$(pwd)"
+~/.agents/skills/{cmd}/scripts/delivery.sh set monitor claude-code "$(pwd)"
+```
+
+If `whoami.sh` reports multiple matching identities, ask which agent name to
+act as before sending. Use `actas <name>` only when the user explicitly wants to
+switch the active sending role.
+
+## Commands
+
+- No arguments: check inbox with `inbox.sh <team> <agent>` and summarize new messages.
 - `send <agent> <message>`: send with `send.sh <team> <from> <to> "<message>"`.
 - `team`: list members with `team.sh <team>`.
-- `history`: show message history with `history.sh <team> [agent]`.
-- `mode turn|off`: update delivery with `delivery.sh set <mode> codex "$(pwd)"`.
-- `actas <name>`: join/switch sending role for this session.
-- `drop <name>`: run `reset.sh "$(pwd)" codex <name>`.
+- `history`: show recent team history with `history.sh <team> [agent]`.
+- `mode monitor|turn|both|off`: update delivery with `delivery.sh set <mode> <agent_type> "$(pwd)"`.
+- `actas <name>`: join or switch this session's sending role for the current project.
+- `drop <name>`: remove that role with `reset.sh "$(pwd)" <agent_type> <name>`.
+
+## Delivery Modes
+
+- `monitor`: best for Claude Code; messages can arrive while the conversation is running.
+- `turn`: best for Codex; check inbox between turns with hooks.
+- `both`: use monitor plus turn as a fallback when the agent supports both.
+- `off`: disable automatic checks and rely on manual inbox checks.
+
+Follow any `AGMSG-DIRECTIVE` printed by delivery scripts. It tells the host
+agent how to install or remove hooks for the selected mode.
+
+## Operating Rules
+
+- Messages are plain text; include enough context for the receiving agent to act.
+- Check inbox before sending if the current turn depends on the other agent's latest reply.
+- Use `team` when the target agent name is unclear.
+- Use `history` when reconnecting to an ongoing discussion.
+- Do not assume messages execute commands. They only deliver instructions or context.
 "#
     )
 }
