@@ -137,6 +137,12 @@ ral uninstall --yes              # 全部消す
 
 統合テストは `tests/cli.rs` にあります。`cargo test` で実行できます。
 
+## 元にしたもの
+
+このツールは [`fujibee/agmsg`](https://github.com/fujibee/agmsg) の考え方と
+コマンド体系を参考にしています。`agmsg` は Bash スクリプトで実装されていますが、
+`rally-rs` では同じような使い勝手を Rust の単一バイナリで扱えるようにしています。
+
 ## ライセンス
 
 MIT。
